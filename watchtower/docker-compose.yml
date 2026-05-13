@@ -7,8 +7,8 @@ services:
       DOCKER_API_VERSION: "1.40"
     command:
       - --label-enable
+      - --interval
+      - "60"
       - --cleanup
-      - --schedule
-      - "0 0 4 * * *"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
