@@ -1,0 +1,22 @@
+services:
+  wwtp-sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: wwtp-sql
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+    ports:
+      - "1433:1433"
+    volumes:
+      - ms_sql_server_sql_data:/var/opt/mssql
+    networks:
+      - wwtp-net
+
+volumes:
+  ms_sql_server_sql_data:
+    external: true
+
+networks:
+  wwtp-net:
+    external: true

@@ -1,0 +1,22 @@
+services:
+  well-readings:
+    image: ghcr.io/ncbrandon/well-readings-app:latest
+    container_name: well-readings
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: ${WELL_READINGS_CONNECTION_STRING}
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - wwtp-net
+      - tunnel
+
+networks:
+  wwtp-net:
+    external: true
+  tunnel:
+    external: true

@@ -1,0 +1,10 @@
+.env
+**/.env
+*.bak
+*.backup
+*.zip
+*.tar
+*.tar.gz
+output/
+data/
+*.log
