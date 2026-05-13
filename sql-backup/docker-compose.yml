@@ -15,4 +15,4 @@ services:
       - /home/brandon/.config/rclone:/config/rclone
       - ./backup-wwtp-sql.sh:/backup-wwtp-sql.sh:ro
     entrypoint: ["/bin/sh", "-c"]
-    command: ["apk add --no-cache bash docker-cli && /backup-wwtp-sql.sh"]
+    command: ["apk add --no-cache bash docker-cli && bash /backup-wwtp-sql.sh"]
