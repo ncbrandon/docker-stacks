@@ -1,0 +1,18 @@
+services:
+  sql-backup:
+    image: rclone/rclone:latest
+    container_name: sql-backup
+    restart: "no"
+    environment:
+      SQL_CONTAINER_NAME: wwtp-sql
+      SQL_BACKUP_DATABASE: ${SQL_BACKUP_DATABASE}
+      SQL_BACKUP_PASSWORD: ${SQL_BACKUP_PASSWORD}
+      ONEDRIVE_REMOTE: ${ONEDRIVE_REMOTE}
+      NAS_REMOTE: ${NAS_REMOTE}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/brandon/sql-backups:/backups
+      - /home/brandon/.config/rclone:/config/rclone
+      - ./backup-wwtp-sql.sh:/backup-wwtp-sql.sh:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apk add --no-cache bash docker-cli && /backup-wwtp-sql.sh"]
