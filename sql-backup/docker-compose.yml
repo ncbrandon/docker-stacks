@@ -8,6 +8,7 @@ services:
       SQL_BACKUP_DATABASE: ${SQL_BACKUP_DATABASE}
       SQL_BACKUP_PASSWORD: ${SQL_BACKUP_PASSWORD}
       ONEDRIVE_REMOTE: ${ONEDRIVE_REMOTE}
+      NAS_REMOTE: ${NAS_REMOTE}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /home/brandon/sql-backups:/backups
