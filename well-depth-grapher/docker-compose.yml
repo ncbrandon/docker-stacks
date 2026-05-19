@@ -1,0 +1,21 @@
+services:
+  well-depth-grapher:
+    image: ghcr.io/ncbrandon/well-depth-grapher:latest
+    container_name: well-depth-grapher
+    restart: unless-stopped
+    ports:
+      - "8502:8501"
+    environment:
+      DB_SERVER: ${DB_SERVER}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    networks:
+      - wwtp-net
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  wwtp-net:
+    external: true
