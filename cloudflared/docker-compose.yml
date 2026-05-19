@@ -2,14 +2,13 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     restart: unless-stopped
-    command: tunnel run
     networks:
-      - tunnel-net
-      - wwtp-net
+      - tunnel
 
 networks:
-  tunnel-net:
+  tunnel:
     external: true
   wwtp-net:
     external: true
