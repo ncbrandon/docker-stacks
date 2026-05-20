@@ -1,6 +1,7 @@
 services:
   well-readings:
     image: ghcr.io/ncbrandon/well-readings-app:latest
+    pull_policy: always
     container_name: well-readings
     ports:
       - "8080:8080"
