@@ -2,11 +2,26 @@ import os
 import re
 import uuid
 from datetime import datetime
+from io import BytesIO
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.express as px
-import streamlit as st
 import pymssql
+import streamlit as st
+from openpyxl.drawing.image import Image as OpenPyxlImage
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    Image as ReportLabImage,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 
 st.set_page_config(
@@ -317,6 +332,195 @@ def build_check_label(row):
     )
 
 
+def safe_filename(value: str) -> str:
+    value = value or "NONE"
+    value = str(value).strip()
+    value = re.sub(r"[^A-Za-z0-9_-]+", "_", value)
+    return value.strip("_") or "NONE"
+
+
+def build_export_dataframe(df: pd.DataFrame, well_name: str) -> pd.DataFrame:
+    export_df = df.copy()
+
+    export_df["datetime"] = pd.to_datetime(export_df["datetime"], errors="coerce")
+    export_df["depth"] = pd.to_numeric(export_df["depth"], errors="coerce")
+
+    export_df = export_df.dropna(subset=["datetime", "depth"])
+    export_df = export_df.sort_values("datetime").reset_index(drop=True)
+
+    export_df.insert(0, "well_name", well_name or "NONE")
+    export_df["date"] = export_df["datetime"].dt.strftime("%m/%d/%Y")
+    export_df["time"] = export_df["datetime"].dt.strftime("%H:%M:%S")
+
+    return export_df[
+        [
+            "well_name",
+            "date",
+            "time",
+            "datetime",
+            "depth",
+            "logger_id",
+            "source_file",
+            "line_number",
+        ]
+    ]
+
+
+def create_depth_chart_image(export_df: pd.DataFrame, well_name: str) -> BytesIO:
+    image_buffer = BytesIO()
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+
+    ax.plot(
+        export_df["datetime"],
+        export_df["depth"],
+        marker="o",
+        linewidth=1.5,
+        markersize=3,
+    )
+
+    ax.set_title(f"Well Depth Readings - {well_name or 'NONE'}")
+    ax.set_xlabel("Date / Time")
+    ax.set_ylabel("Well Depth")
+    ax.grid(True, alpha=0.3)
+
+    fig.autofmt_xdate()
+    fig.tight_layout()
+
+    fig.savefig(image_buffer, format="png", dpi=160)
+    plt.close(fig)
+
+    image_buffer.seek(0)
+    return image_buffer
+
+
+def create_excel_export(df: pd.DataFrame, well_name: str) -> BytesIO:
+    export_df = build_export_dataframe(df, well_name)
+    chart_image = create_depth_chart_image(export_df, well_name)
+
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, sheet_name="Depth Readings", index=False)
+
+        workbook = writer.book
+        worksheet = writer.sheets["Depth Readings"]
+
+        worksheet.freeze_panes = "A2"
+
+        for column_cells in worksheet.columns:
+            max_length = 0
+            column_letter = column_cells[0].column_letter
+
+            for cell in column_cells:
+                value = "" if cell.value is None else str(cell.value)
+                max_length = max(max_length, len(value))
+
+            worksheet.column_dimensions[column_letter].width = min(max_length + 2, 32)
+
+        chart_sheet = workbook.create_sheet("Chart")
+
+        chart_sheet["A1"] = f"Well Depth Graph - {well_name or 'NONE'}"
+        chart_sheet["A2"] = f"Exported: {datetime.now().strftime('%m/%d/%Y %H:%M:%S')}"
+        chart_sheet["A3"] = f"Readings: {len(export_df):,}"
+
+        if not export_df.empty:
+            chart_sheet["A4"] = (
+                f"Date Range: "
+                f"{export_df['datetime'].min().strftime('%m/%d/%Y %H:%M:%S')} "
+                f"through "
+                f"{export_df['datetime'].max().strftime('%m/%d/%Y %H:%M:%S')}"
+            )
+
+        image_for_excel = OpenPyxlImage(chart_image)
+        image_for_excel.anchor = "A6"
+        chart_sheet.add_image(image_for_excel)
+
+    output.seek(0)
+    return output
+
+
+def create_pdf_export(df: pd.DataFrame, well_name: str) -> BytesIO:
+    export_df = build_export_dataframe(df, well_name)
+    chart_image = create_depth_chart_image(export_df, well_name)
+
+    output = BytesIO()
+
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=landscape(letter),
+        rightMargin=0.4 * inch,
+        leftMargin=0.4 * inch,
+        topMargin=0.4 * inch,
+        bottomMargin=0.4 * inch,
+    )
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    title = f"Well Depth Report - {well_name or 'NONE'}"
+    exported_at = f"Exported: {datetime.now().strftime('%m/%d/%Y %H:%M:%S')}"
+
+    if not export_df.empty:
+        date_range = (
+            f"Date Range: "
+            f"{export_df['datetime'].min().strftime('%m/%d/%Y %H:%M:%S')} "
+            f"through "
+            f"{export_df['datetime'].max().strftime('%m/%d/%Y %H:%M:%S')}"
+        )
+    else:
+        date_range = "Date Range: No readings"
+
+    story.append(Paragraph(title, styles["Title"]))
+    story.append(Paragraph(exported_at, styles["Normal"]))
+    story.append(Paragraph(date_range, styles["Normal"]))
+    story.append(Paragraph(f"Total Readings: {len(export_df):,}", styles["Normal"]))
+    story.append(Spacer(1, 0.2 * inch))
+
+    story.append(ReportLabImage(chart_image, width=9.8 * inch, height=4.7 * inch))
+    story.append(Spacer(1, 0.25 * inch))
+
+    table_data = [["Date", "Time", "Depth", "Logger ID", "Source File"]]
+
+    for _, row in export_df.iterrows():
+        table_data.append(
+            [
+                row["date"],
+                row["time"],
+                f"{row['depth']:.2f}",
+                str(row["logger_id"]),
+                str(row["source_file"]),
+            ]
+        )
+
+    table = Table(table_data, repeatRows=1)
+
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d1d5db")),
+                (
+                    "ROWBACKGROUNDS",
+                    (0, 1),
+                    (-1, -1),
+                    [colors.white, colors.HexColor("#eff6ff")],
+                ),
+                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+            ]
+        )
+    )
+
+    story.append(table)
+    doc.build(story)
+
+    output.seek(0)
+    return output
+
+
 st.title("Well Depth Grapher")
 
 st.write(
@@ -374,12 +578,18 @@ with tab_upload:
 
             st.subheader("Depth Over Time")
 
+            chart_title = (
+                "Uploaded Well Depth Readings"
+                if selected_well == "NONE"
+                else f"{selected_well} Well Depth Readings"
+            )
+
             fig = px.line(
                 df,
                 x="datetime",
                 y="depth",
                 color="logger_id",
-                title="Uploaded Well Depth Readings",
+                title=chart_title,
                 labels={
                     "datetime": "Date / Time",
                     "depth": "Well Depth",
@@ -398,14 +608,46 @@ with tab_upload:
             st.subheader("Data Table")
             st.dataframe(df, use_container_width=True)
 
+            st.subheader("Download Report")
+
+            export_well_name = selected_well if selected_well else "NONE"
+            safe_well = safe_filename(export_well_name)
+            file_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
             csv = df.to_csv(index=False).encode("utf-8")
 
-            st.download_button(
-                "Download Parsed CSV",
-                data=csv,
-                file_name="well_depth_readings.csv",
-                mime="text/csv",
-            )
+            try:
+                excel_file = create_excel_export(df, export_well_name)
+                pdf_file = create_pdf_export(df, export_well_name)
+
+                col_download_1, col_download_2, col_download_3 = st.columns(3)
+
+                with col_download_1:
+                    st.download_button(
+                        "Download Parsed CSV",
+                        data=csv,
+                        file_name=f"well_depth_{safe_well}_{file_stamp}.csv",
+                        mime="text/csv",
+                    )
+
+                with col_download_2:
+                    st.download_button(
+                        "Download Excel Report",
+                        data=excel_file,
+                        file_name=f"well_depth_{safe_well}_{file_stamp}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                with col_download_3:
+                    st.download_button(
+                        "Download PDF Report",
+                        data=pdf_file,
+                        file_name=f"well_depth_{safe_well}_{file_stamp}.pdf",
+                        mime="application/pdf",
+                    )
+
+            except Exception as export_error:
+                st.error(f"Could not create export files: {export_error}")
 
             if selected_well == "NONE":
                 st.info("Well Name is set to NONE, so this upload will not be saved to the database.")
