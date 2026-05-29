@@ -60,7 +60,7 @@ def get_db_config():
         "database": os.getenv("DB_NAME", "WWTP"),
         "user": os.getenv("DB_USER", "sa"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "port": int(os.getenv("DB_PORT", "1433")),
+        "port": int(os.getenv("DB_PORT") or "1433"),
     }
 
 
