@@ -450,36 +450,6 @@ def is_rain_sheet(sheet_name):
     return "rain" in str(sheet_name).lower()
 
 
-def detect_month_header_row(raw: pd.DataFrame):
-    best_row_idx = None
-    best_hits = 0
-
-    rows_to_check = min(20, len(raw))
-
-    for i in range(rows_to_check):
-        row = raw.iloc[i].tolist()
-        hits = 0
-
-        for cell in row:
-            if pd.isna(cell):
-                continue
-
-            text = str(cell).strip().lower()
-            text = re.sub(r"[^a-z]", "", text)
-
-            if text in MONTHS:
-                hits += 1
-
-        if hits > best_hits:
-            best_hits = hits
-            best_row_idx = i
-
-    if best_hits >= 3:
-        return best_row_idx
-
-    return None
-
-
 def detect_day_column(raw: pd.DataFrame, start_row: int):
     best_col = None
     best_hits = 0
@@ -506,27 +476,88 @@ def detect_day_column(raw: pd.DataFrame, start_row: int):
     return None
 
 
-def parse_wide_year_sheet(raw: pd.DataFrame, year: int, value_type: str):
+def detect_month_header_row(raw: pd.DataFrame):
     """
-    Converts wide sheets like:
-        Day | Jan | Feb | Mar | ...
-         1  | ... | ... | ...
-         2  | ... | ... | ...
+    Finds the header row for both types of sheets:
 
-    value_type should be either "rain" or "flow".
+    1. Rain sheets:
+       Day | January | February | March | ...
+
+    2. Flow sheets:
+       Day | 43846 | 43877 | 43906 | ...
+       These are Excel date serial numbers formatted as months in Excel.
     """
 
-    if raw.empty or year is None:
-        return pd.DataFrame()
+    rows_to_check = min(20, len(raw))
 
-    header_row = detect_month_header_row(raw)
-    if header_row is None:
-        return pd.DataFrame()
+    # First, try normal month names.
+    best_row_idx = None
+    best_hits = 0
+
+    for i in range(rows_to_check):
+        row = raw.iloc[i].tolist()
+        hits = 0
+
+        for cell in row:
+            if pd.isna(cell):
+                continue
+
+            text = str(cell).strip().lower()
+            text = re.sub(r"[^a-z]", "", text)
+
+            if text in MONTHS:
+                hits += 1
+
+        if hits > best_hits:
+            best_hits = hits
+            best_row_idx = i
+
+    if best_hits >= 3:
+        return best_row_idx
+
+    # Second, try Excel date serial headers.
+    # Your flow sheets have month headers stored as numbers like 43846, 43877, etc.
+    for i in range(rows_to_check):
+        date_serial_hits = 0
+
+        for c in range(1, raw.shape[1]):
+            cell = raw.iat[i, c]
+
+            if pd.isna(cell):
+                continue
+
+            if isinstance(cell, (pd.Timestamp, datetime, date)):
+                date_serial_hits += 1
+                continue
+
+            num = to_float_or_none(cell)
+
+            if num is not None and num > 1000:
+                date_serial_hits += 1
+
+        if date_serial_hits >= 10:
+            return i
+
+    return None
+
+
+def infer_month_columns(raw: pd.DataFrame, header_row: int):
+    """
+    Returns a dictionary:
+        column_index -> month_number
+
+    Handles either:
+        January, February, March...
+    or:
+        Excel date serial numbers across the top of the flow sheets.
+    """
 
     month_columns = {}
 
+    # Normal month-name headers.
     for c in range(raw.shape[1]):
         cell = raw.iat[header_row, c]
+
         if pd.isna(cell):
             continue
 
@@ -536,10 +567,71 @@ def parse_wide_year_sheet(raw: pd.DataFrame, year: int, value_type: str):
         if text in MONTHS:
             month_columns[c] = MONTHS[text]
 
+    if len(month_columns) >= 3:
+        return month_columns
+
+    # Excel date serial / date headers.
+    date_like_cols = []
+
+    for c in range(1, raw.shape[1]):
+        cell = raw.iat[header_row, c]
+
+        if pd.isna(cell):
+            continue
+
+        if isinstance(cell, (pd.Timestamp, datetime, date)):
+            month_num = int(cell.month)
+            date_like_cols.append((c, month_num))
+            continue
+
+        num = to_float_or_none(cell)
+
+        if num is not None and num > 1000:
+            date_like_cols.append((c, None))
+
+    if len(date_like_cols) >= 10:
+        # For your yearly flow sheets, the 12 columns are Jan-Dec in order.
+        # Some headers are just Excel serials, so assigning by position is safer.
+        for idx, item in enumerate(sorted(date_like_cols, key=lambda x: x[0])[:12]):
+            col_idx, detected_month = item
+
+            if detected_month is not None and 1 <= detected_month <= 12:
+                month_columns[col_idx] = detected_month
+            else:
+                month_columns[col_idx] = idx + 1
+
+    return month_columns
+
+
+def parse_wide_year_sheet(raw: pd.DataFrame, year: int, value_type: str):
+    """
+    Converts wide sheets like:
+
+        Day | Jan | Feb | Mar | ...
+         1  | ... | ... | ...
+         2  | ... | ... | ...
+
+    Also handles your wastewater-flow sheets where the headers are stored as
+    Excel date serial numbers instead of month names.
+
+    value_type should be either "rain" or "flow".
+    """
+
+    if raw.empty or year is None:
+        return pd.DataFrame()
+
+    header_row = detect_month_header_row(raw)
+
+    if header_row is None:
+        return pd.DataFrame()
+
+    month_columns = infer_month_columns(raw, header_row)
+
     if not month_columns:
         return pd.DataFrame()
 
     day_col = detect_day_column(raw, header_row + 1)
+
     if day_col is None:
         return pd.DataFrame()
 
