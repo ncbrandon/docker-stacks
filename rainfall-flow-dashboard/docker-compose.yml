@@ -1,0 +1,17 @@
+services:
+  rainfall-flow-dashboard:
+    build: .
+    container_name: rainfall-flow-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8503:8501"
+    networks:
+      - wwtp-net
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  wwtp-net:
+    external: true
