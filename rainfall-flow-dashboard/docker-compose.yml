@@ -3,10 +3,15 @@ services:
     build: .
     container_name: rainfall-flow-dashboard
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      SQL_HOST: ${SQL_HOST}
+      SQL_PORT: ${SQL_PORT}
+      SQL_DATABASE: ${SQL_DATABASE}
+      SQL_USER: ${SQL_USER}
+      SQL_PASSWORD: ${SQL_PASSWORD}
+      APP_TITLE: ${APP_TITLE}
     ports:
-      - "8503:8501"
+      - "8502:8501"
     networks:
       - wwtp-net
     labels:
