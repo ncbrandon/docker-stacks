@@ -11,7 +11,7 @@ services:
       SQL_PASSWORD: ${SQL_PASSWORD}
       APP_TITLE: ${APP_TITLE}
     ports:
-      - "8502:8501"
+      - "8503:8501"
     networks:
       - wwtp-net
     labels:
