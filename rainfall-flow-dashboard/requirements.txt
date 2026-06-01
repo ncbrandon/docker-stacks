@@ -6,3 +6,4 @@ pymssql
 python-dotenv
 xlsxwriter
 reportlab
+statsmodels
