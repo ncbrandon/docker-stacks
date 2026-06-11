@@ -555,11 +555,11 @@ def import_hydrant_flushing(uploaded_file):
 
         hydrant_number = existing_tag or facility_identifier
 
-	if is_header_or_bad_row(facility_identifier, hydrant_number, location):
+        if is_header_or_bad_row(facility_identifier, hydrant_number, location):
             rows_skipped += 1
             continue
 
-	if not hydrant_number and not facility_identifier:
+        if not hydrant_number and not facility_identifier:
             rows_skipped += 1
             continue
 
@@ -1127,14 +1127,14 @@ def setup_page():
     st.subheader("Table Counts")
 
     counts = query_df(
-    """
-    SELECT 'FireFlowHydrants' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowHydrants
-    UNION ALL
-    SELECT 'FireFlowTests' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowTests
-    UNION ALL
-    SELECT 'FireFlowImportBatches' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowImportBatches
-    """
-)
+        """
+        SELECT 'FireFlowHydrants' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowHydrants
+        UNION ALL
+        SELECT 'FireFlowTests' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowTests
+        UNION ALL
+        SELECT 'FireFlowImportBatches' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowImportBatches
+        """
+     )
 
     st.dataframe(counts, use_container_width=True, hide_index=True)
 
