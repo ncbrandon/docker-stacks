@@ -159,9 +159,25 @@ def clean_text(value):
         return None
     if pd.isna(value):
         return None
+
+    # Convert numeric hydrant/location values like 46.0 to "46"
+    if isinstance(value, (int, float)):
+        if float(value).is_integer():
+            return str(int(value))
+        return str(value).strip()
+
     text = str(value).strip()
     if text == "" or text.lower() == "nan":
         return None
+
+    # Also catch text values like "46.0"
+    try:
+        number = float(text)
+        if number.is_integer():
+            return str(int(number))
+    except Exception:
+        pass
+
     return text
 
 
@@ -191,6 +207,16 @@ def to_date(value):
         return None
     if pd.isna(value):
         return None
+
+    # Excel serial date numbers, for example 43606 = 05/21/2019
+    if isinstance(value, (int, float)):
+        try:
+            if value > 20000:
+                parsed = pd.to_datetime(value, unit="D", origin="1899-12-30", errors="coerce")
+                if pd.notna(parsed):
+                    return parsed.date()
+        except Exception:
+            pass
 
     try:
         parsed = pd.to_datetime(value, errors="coerce")
