@@ -181,6 +181,43 @@ def clean_text(value):
     return text
 
 
+def is_header_or_bad_row(*values):
+    bad_words = {
+        "id",
+        "fireflowhydrantid",
+        "facilityidentifier",
+        "hydrantnumber",
+        "locationdescription",
+        "testdate",
+        "flowgpm",
+        "availablefireflowgpm",
+        "staticpsi",
+        "residualpsi",
+        "pitotpsi",
+        "outletdiameterinches",
+        "numberofoutlets",
+        "coefficient",
+        "totalgallonsflowing",
+        "testedby",
+        "witnessedby",
+        "sourcefilename",
+        "notes",
+    }
+
+    cleaned = [clean_text(v) for v in values if clean_text(v) is not None]
+
+    if not cleaned:
+        return True
+
+    matches = 0
+
+    for value in cleaned:
+        normalized = value.replace(" ", "").replace("_", "").lower()
+        if normalized in bad_words:
+            matches += 1
+
+    return matches >= 2
+
 def to_decimal(value):
     if value is None:
         return None
@@ -518,7 +555,11 @@ def import_hydrant_flushing(uploaded_file):
 
         hydrant_number = existing_tag or facility_identifier
 
-        if not hydrant_number and not facility_identifier:
+        if is_header_or_bad_row(facility_identifier, hydrant_number, location):
+    	    rows_skipped += 1
+    	    continue
+
+	if not hydrant_number and not facility_identifier:
             rows_skipped += 1
             continue
 
@@ -591,8 +632,33 @@ def import_fire_flow_tests(uploaded_file):
     xls = pd.ExcelFile(uploaded_file)
     sheet_name = "Flowtests" if "Flowtests" in xls.sheet_names else xls.sheet_names[0]
 
-    # The 2021 fire-flow sheet has headers around row 3.
-    df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=2)
+    # Read without assuming the header row. Then find the real header row.
+    raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
+    raw = raw.dropna(how="all")
+
+    header_row_index = None
+
+    for idx, row in raw.iterrows():
+        row_values = [clean_text(v) for v in row.tolist()]
+        row_text = " ".join([v.lower() for v in row_values if v])
+
+        if (
+            "location" in row_text
+            and "pitot" in row_text
+            and "static" in row_text
+            and "residual" in row_text
+        ):
+            header_row_index = idx
+            break
+
+    if header_row_index is None:
+        raise ValueError(
+            "Could not find the fire-flow header row. Expected columns like Location, Pitot, Static, and Residual."
+        )
+
+    headers = raw.loc[header_row_index].tolist()
+    df = raw.loc[header_row_index + 1:].copy()
+    df.columns = [clean_text(c) or f"Column{i}" for i, c in enumerate(headers)]
     df = normalize_columns(df)
     df = df.dropna(how="all")
 
@@ -604,10 +670,6 @@ def import_fire_flow_tests(uploaded_file):
         rows_read += 1
 
         hydrant_number = clean_text(get_value(row, df, ["Location", "Hydrant", "Hydrant Number", "HydrantNumber"]))
-
-        if not hydrant_number:
-            rows_skipped += 1
-            continue
 
         test_date = to_date(get_value(row, df, ["Test Date", "Date"]))
 
@@ -622,6 +684,34 @@ def import_fire_flow_tests(uploaded_file):
         static_psi = to_decimal(get_value(row, df, ["Static", "Static PSI"]))
         residual_psi = to_decimal(get_value(row, df, ["Residual", "Residual PSI"]))
         witnessed_by = clean_text(get_value(row, df, ["Witnessed By", "Witnessed"]))
+
+        # Skip repeated header rows or accidental exports.
+        if is_header_or_bad_row(
+            hydrant_number,
+            test_date,
+            flow_gpm,
+            available_fire_flow_gpm,
+            static_psi,
+            residual_psi,
+            pitot_psi,
+        ):
+            rows_skipped += 1
+            continue
+
+        if not hydrant_number:
+            rows_skipped += 1
+            continue
+
+        # Skip rows that do not contain any useful fire-flow numbers.
+        if (
+            flow_gpm is None
+            and available_fire_flow_gpm is None
+            and static_psi is None
+            and residual_psi is None
+            and pitot_psi is None
+        ):
+            rows_skipped += 1
+            continue
 
         hydrant_id, _ = find_or_create_hydrant(hydrant_number=hydrant_number)
 
@@ -666,7 +756,6 @@ def import_fire_flow_tests(uploaded_file):
     )
 
     return rows_read, rows_inserted, rows_skipped
-
 
 @st.cache_data(ttl=30)
 def load_hydrants():
@@ -1038,14 +1127,14 @@ def setup_page():
     st.subheader("Table Counts")
 
     counts = query_df(
-        """
-        SELECT 'FireFlowHydrants' AS TableName, COUNT(*) AS RowCount FROM dbo.FireFlowHydrants
-        UNION ALL
-        SELECT 'FireFlowTests' AS TableName, COUNT(*) AS RowCount FROM dbo.FireFlowTests
-        UNION ALL
-        SELECT 'FireFlowImportBatches' AS TableName, COUNT(*) AS RowCount FROM dbo.FireFlowImportBatches
-        """
-    )
+    """
+    SELECT 'FireFlowHydrants' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowHydrants
+    UNION ALL
+    SELECT 'FireFlowTests' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowTests
+    UNION ALL
+    SELECT 'FireFlowImportBatches' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowImportBatches
+    """
+)
 
     st.dataframe(counts, use_container_width=True, hide_index=True)
 
