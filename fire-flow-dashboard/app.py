@@ -555,9 +555,9 @@ def import_hydrant_flushing(uploaded_file):
 
         hydrant_number = existing_tag or facility_identifier
 
-        if is_header_or_bad_row(facility_identifier, hydrant_number, location):
-    	    rows_skipped += 1
-    	    continue
+	if is_header_or_bad_row(facility_identifier, hydrant_number, location):
+            rows_skipped += 1
+            continue
 
 	if not hydrant_number and not facility_identifier:
             rows_skipped += 1
