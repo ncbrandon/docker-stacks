@@ -1,0 +1,22 @@
+services:
+  fire-flow-dashboard:
+    image: ghcr.io/ncbrandon/fire-flow-dashboard:latest
+    container_name: fire-flow-dashboard
+    restart: unless-stopped
+    environment:
+      SQL_SERVER: wwtp-sql
+      SQL_PORT: 1433
+      SQL_DATABASE: WWTP
+      SQL_USER: sa
+      SQL_PASSWORD: ${SQL_PASSWORD}
+    networks:
+      - wwtp-net
+      - tunnel
+    ports:
+      - "8504:8501"
+
+networks:
+  wwtp-net:
+    external: true
+  tunnel:
+    external: true
