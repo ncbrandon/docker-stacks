@@ -132,7 +132,7 @@ def ensure_tables():
         """,
         """
         IF NOT EXISTS (
-            SELECT 1 FROM sys.indexes 
+            SELECT 1 FROM sys.indexes
             WHERE name = 'IX_FireFlowHydrants_HydrantNumber'
             AND object_id = OBJECT_ID('dbo.FireFlowHydrants')
         )
@@ -141,7 +141,7 @@ def ensure_tables():
         """,
         """
         IF NOT EXISTS (
-            SELECT 1 FROM sys.indexes 
+            SELECT 1 FROM sys.indexes
             WHERE name = 'IX_FireFlowTests_HydrantNumber_TestDate'
             AND object_id = OBJECT_ID('dbo.FireFlowTests')
         )
@@ -540,6 +540,22 @@ def import_hydrant_flushing(uploaded_file):
     df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
     df = normalize_columns(df)
 
+    required_any = [
+        "Facility Identifier",
+        "Location Description",
+        "Existing Tag Number",
+        "Flow (PSI)",
+        "Date Hydrant Flushed",
+    ]
+
+    found_required = [col for col in required_any if col in df.columns]
+
+    if len(found_required) < 2:
+        raise ValueError(
+            "This does not look like the Hydrant / Flushing spreadsheet. "
+            "Expected columns like Facility Identifier, Location Description, Existing Tag Number, Flow (PSI), or Date Hydrant Flushed."
+        )
+
     rows_read = 0
     rows_inserted = 0
     rows_updated = 0
@@ -560,6 +576,11 @@ def import_hydrant_flushing(uploaded_file):
             continue
 
         if not hydrant_number and not facility_identifier:
+            rows_skipped += 1
+            continue
+
+        # Extra protection: skip accidental Fire Flow export rows.
+        if hydrant_number in ["HydrantNumber", "FacilityIdentifier", "Id"]:
             rows_skipped += 1
             continue
 
@@ -939,14 +960,20 @@ def import_page():
 
     if flushing_file is not None:
         if st.button("Import Hydrant / Flushing File"):
-            with st.spinner("Importing hydrant/flushing data..."):
-                result = import_hydrant_flushing(flushing_file)
-                st.cache_data.clear()
-            rows_read, rows_inserted, rows_updated, rows_skipped, tests_inserted = result
-            st.success(
-                f"Import complete. Rows read: {rows_read}, hydrants inserted: {rows_inserted}, "
-                f"hydrants updated: {rows_updated}, skipped: {rows_skipped}, test rows inserted: {tests_inserted}."
-            )
+            try:
+                with st.spinner("Importing hydrant/flushing data..."):
+                    result = import_hydrant_flushing(flushing_file)
+                    st.cache_data.clear()
+
+                rows_read, rows_inserted, rows_updated, rows_skipped, tests_inserted = result
+
+                st.success(
+                    f"Import complete. Rows read: {rows_read}, hydrants inserted: {rows_inserted}, "
+                    f"hydrants updated: {rows_updated}, skipped: {rows_skipped}, "
+                    f"test rows inserted: {tests_inserted}."
+                )
+            except Exception as exc:
+                st.error(str(exc))
 
     st.divider()
 
@@ -961,13 +988,19 @@ def import_page():
 
     if fire_flow_file is not None:
         if st.button("Import Fire Flow Test File"):
-            with st.spinner("Importing fire-flow tests..."):
-                result = import_fire_flow_tests(fire_flow_file)
-                st.cache_data.clear()
-            rows_read, rows_inserted, rows_skipped = result
-            st.success(
-                f"Import complete. Rows read: {rows_read}, tests inserted: {rows_inserted}, skipped: {rows_skipped}."
-            )
+            try:
+                with st.spinner("Importing fire-flow tests..."):
+                    result = import_fire_flow_tests(fire_flow_file)
+                    st.cache_data.clear()
+
+                rows_read, rows_inserted, rows_skipped = result
+
+                st.success(
+                    f"Import complete. Rows read: {rows_read}, tests inserted: {rows_inserted}, "
+                    f"skipped: {rows_skipped}."
+                )
+            except Exception as exc:
+                st.error(str(exc))
 
     st.divider()
 
