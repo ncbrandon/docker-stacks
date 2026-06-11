@@ -1,13 +1,15 @@
 services:
   fire-flow-dashboard:
-    image: ghcr.io/ncbrandon/fire-flow-dashboard:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: fire-flow-dashboard
     restart: unless-stopped
     environment:
-      SQL_SERVER: wwtp-sql
-      SQL_PORT: 1433
-      SQL_DATABASE: WWTP
-      SQL_USER: sa
+      SQL_SERVER: ${SQL_SERVER}
+      SQL_PORT: ${SQL_PORT}
+      SQL_DATABASE: ${SQL_DATABASE}
+      SQL_USER: ${SQL_USER}
       SQL_PASSWORD: ${SQL_PASSWORD}
     networks:
       - wwtp-net
