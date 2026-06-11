@@ -1,6 +1,7 @@
+import math
 import os
 import uuid
-from datetime import datetime, date
+from datetime import date, datetime
 from io import BytesIO
 
 import pandas as pd
@@ -25,6 +26,10 @@ SQL_DATABASE = os.getenv("SQL_DATABASE", "WWTP")
 SQL_USER = os.getenv("SQL_USER", "sa")
 SQL_PASSWORD = os.getenv("SQL_PASSWORD", "")
 
+
+# -----------------------------
+# Database helpers
+# -----------------------------
 
 def get_conn(as_dict=False):
     return pymssql.connect(
@@ -131,6 +136,18 @@ def ensure_tables():
         END
         """,
         """
+        IF COL_LENGTH('dbo.FireFlowTests', 'FlowGpm') IS NULL
+        BEGIN
+            ALTER TABLE dbo.FireFlowTests ADD FlowGpm DECIMAL(18,2) NULL;
+        END
+        """,
+        """
+        IF COL_LENGTH('dbo.FireFlowTests', 'TotalGallonsFlowing') IS NULL
+        BEGIN
+            ALTER TABLE dbo.FireFlowTests ADD TotalGallonsFlowing DECIMAL(18,2) NULL;
+        END
+        """,
+        """
         IF NOT EXISTS (
             SELECT 1 FROM sys.indexes
             WHERE name = 'IX_FireFlowHydrants_HydrantNumber'
@@ -154,23 +171,26 @@ def ensure_tables():
         execute(statement)
 
 
+# -----------------------------
+# Cleanup / conversion helpers
+# -----------------------------
+
 def clean_text(value):
     if value is None:
         return None
     if pd.isna(value):
         return None
 
-    # Convert numeric hydrant/location values like 46.0 to "46"
     if isinstance(value, (int, float)):
         if float(value).is_integer():
             return str(int(value))
         return str(value).strip()
 
     text = str(value).strip()
-    if text == "" or text.lower() == "nan":
+    if text == "" or text.lower() in ["nan", "none", "null"]:
         return None
 
-    # Also catch text values like "46.0"
+    # Convert text values like 46.0 to 46, but do not change things like 46A.
     try:
         number = float(text)
         if number.is_integer():
@@ -181,51 +201,63 @@ def clean_text(value):
     return text
 
 
-def is_header_or_bad_row(*values):
-    bad_words = {
-        "id",
-        "fireflowhydrantid",
-        "facilityidentifier",
-        "hydrantnumber",
-        "locationdescription",
-        "testdate",
-        "flowgpm",
-        "availablefireflowgpm",
-        "staticpsi",
-        "residualpsi",
-        "pitotpsi",
-        "outletdiameterinches",
-        "numberofoutlets",
-        "coefficient",
-        "totalgallonsflowing",
-        "testedby",
-        "witnessedby",
-        "sourcefilename",
-        "notes",
-    }
+def standardize_hydrant_number(value):
+    text = clean_text(value)
+    if not text:
+        return None
 
-    cleaned = [clean_text(v) for v in values if clean_text(v) is not None]
+    text = text.strip().upper()
 
-    if not cleaned:
-        return True
+    # HYD-1, HYD 1, and HYD_1 are all treated as 1.
+    for prefix in ["HYD-", "HYD ", "HYD_"]:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
 
-    matches = 0
+    # Remove leading zeroes only from purely numeric values.
+    if text.isdigit():
+        text = str(int(text))
 
-    for value in cleaned:
-        normalized = value.replace(" ", "").replace("_", "").lower()
-        if normalized in bad_words:
-            matches += 1
+    return text
 
-    return matches >= 2
+
+def facility_identifier_from_hydrant(hydrant_number, existing_facility=None):
+    existing = clean_text(existing_facility)
+    if existing and existing.upper().startswith("HYD-"):
+        return existing.upper()
+
+    standardized = standardize_hydrant_number(hydrant_number)
+    if standardized:
+        return f"HYD-{standardized}"
+
+    return existing
+
+
+def normalize_key(text):
+    text = clean_text(text)
+    if not text:
+        return ""
+    return (
+        text.lower()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+        .replace("/", "")
+        .replace("(", "")
+        .replace(")", "")
+        .replace(".", "")
+    )
+
 
 def to_decimal(value):
     if value is None:
         return None
     if pd.isna(value):
         return None
+
     text = str(value).replace(",", "").strip()
-    if text == "" or text.lower() == "nan":
+    if text == "" or text.lower() in ["nan", "none", "null"]:
         return None
+
     try:
         return float(text)
     except Exception:
@@ -233,10 +265,10 @@ def to_decimal(value):
 
 
 def to_int(value):
-    value = to_decimal(value)
-    if value is None:
+    number = to_decimal(value)
+    if number is None:
         return None
-    return int(value)
+    return int(number)
 
 
 def to_date(value):
@@ -245,7 +277,10 @@ def to_date(value):
     if pd.isna(value):
         return None
 
-    # Excel serial date numbers, for example 43606 = 05/21/2019
+    if isinstance(value, (datetime, date)):
+        return value.date() if isinstance(value, datetime) else value
+
+    # Excel serial date numbers, for example 43606 = 05/21/2019.
     if isinstance(value, (int, float)):
         try:
             if value > 20000:
@@ -270,31 +305,32 @@ def to_bool(value):
         return None
 
     text = text.lower()
-    if text in ["true", "yes", "y", "1", "active"]:
+    if text in ["true", "yes", "y", "1", "active", "operable"]:
         return 1
-    if text in ["false", "no", "n", "0", "inactive"]:
+    if text in ["false", "no", "n", "0", "inactive", "not active", "inoperable"]:
         return 0
     return None
 
 
 def normalize_columns(df):
     df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [clean_text(c) or f"Column{i}" for i, c in enumerate(df.columns)]
     return df
 
 
 def first_col(df, possible_names):
-    lower_map = {str(c).strip().lower(): c for c in df.columns}
+    normalized_map = {normalize_key(c): c for c in df.columns}
 
     for name in possible_names:
-        key = name.strip().lower()
-        if key in lower_map:
-            return lower_map[key]
+        key = normalize_key(name)
+        if key in normalized_map:
+            return normalized_map[key]
 
     for col in df.columns:
-        col_lower = str(col).strip().lower()
+        col_key = normalize_key(col)
         for name in possible_names:
-            if name.strip().lower() in col_lower:
+            name_key = normalize_key(name)
+            if name_key and name_key in col_key:
                 return col
 
     return None
@@ -306,6 +342,86 @@ def get_value(row, df, possible_names):
         return None
     return row.get(col)
 
+
+def is_header_or_bad_row(*values):
+    bad_words = {
+        "id",
+        "fireflowhydrantid",
+        "facilityidentifier",
+        "hydrantnumber",
+        "existingtagnumber",
+        "locationdescription",
+        "testdate",
+        "flowgpm",
+        "availablefireflowgpm",
+        "staticpsi",
+        "residualpsi",
+        "pitotpsi",
+        "outletdiameterinches",
+        "numberofoutlets",
+        "coefficient",
+        "totalgallonsflowing",
+        "testedby",
+        "witnessedby",
+        "sourcefilename",
+        "notes",
+    }
+
+    cleaned = [clean_text(v) for v in values if clean_text(v) is not None]
+    if not cleaned:
+        return True
+
+    matches = 0
+    for value in cleaned:
+        if normalize_key(value) in bad_words:
+            matches += 1
+
+    return matches >= 2
+
+
+# -----------------------------
+# Fire-flow math
+# -----------------------------
+
+def calculate_flow_gpm(pitot_psi, outlet_diameter_inches, coefficient=0.9, number_of_outlets=1):
+    pitot = to_decimal(pitot_psi)
+    diameter = to_decimal(outlet_diameter_inches)
+    coef = to_decimal(coefficient)
+    outlets = to_int(number_of_outlets)
+
+    if pitot is None or diameter is None or coef is None or outlets is None:
+        return None
+    if pitot < 0 or diameter <= 0 or coef <= 0 or outlets <= 0:
+        return None
+
+    return round(29.83 * coef * (diameter ** 2) * math.sqrt(pitot) * outlets, 2)
+
+
+def calculate_available_fire_flow(flow_gpm, static_psi, residual_psi, target_residual_psi=20):
+    flow = to_decimal(flow_gpm)
+    static = to_decimal(static_psi)
+    residual = to_decimal(residual_psi)
+    target = to_decimal(target_residual_psi)
+
+    if flow is None or static is None or residual is None or target is None:
+        return None
+    if flow <= 0:
+        return None
+    if static <= residual:
+        return None
+    if static <= target:
+        return None
+
+    try:
+        aff = flow * (((static - target) ** 0.54) / ((static - residual) ** 0.54))
+        return round(aff, 2)
+    except Exception:
+        return None
+
+
+# -----------------------------
+# Insert/update helpers
+# -----------------------------
 
 def find_or_create_hydrant(
     facility_identifier=None,
@@ -322,6 +438,10 @@ def find_or_create_hydrant(
     longitude=None,
     notes=None,
 ):
+    hydrant_number = standardize_hydrant_number(hydrant_number or existing_tag or facility_identifier)
+    facility_identifier = facility_identifier_from_hydrant(hydrant_number, facility_identifier)
+    existing_tag = clean_text(existing_tag)
+
     found = None
 
     if hydrant_number:
@@ -363,16 +483,16 @@ def find_or_create_hydrant(
                 facility_identifier,
                 hydrant_number,
                 existing_tag,
-                location,
+                clean_text(location),
                 hydrant_size,
-                manufacturer,
-                model_year,
+                clean_text(manufacturer),
+                clean_text(model_year),
                 install_date,
                 operable,
                 active,
                 latitude,
                 longitude,
-                notes,
+                clean_text(notes),
                 hydrant_id,
             ),
         )
@@ -406,16 +526,16 @@ def find_or_create_hydrant(
             facility_identifier,
             hydrant_number,
             existing_tag,
-            location,
+            clean_text(location),
             hydrant_size,
-            manufacturer,
-            model_year,
+            clean_text(manufacturer),
+            clean_text(model_year),
             install_date,
             operable,
             active if active is not None else 1,
             latitude,
             longitude,
-            notes,
+            clean_text(notes),
         ),
     )
 
@@ -444,6 +564,8 @@ def insert_import_batch(source_file, import_type, rows_read, rows_inserted, rows
 
 
 def fire_flow_duplicate_exists(hydrant_number, test_date, static_psi, residual_psi, pitot_psi, flow_gpm):
+    hydrant_number = standardize_hydrant_number(hydrant_number)
+
     existing = query_one(
         """
         SELECT TOP 1 Id
@@ -484,6 +606,9 @@ def insert_fire_flow_test(
     source_file=None,
     notes=None,
 ):
+    hydrant_number = standardize_hydrant_number(hydrant_number or facility_identifier)
+    facility_identifier = facility_identifier_from_hydrant(hydrant_number, facility_identifier)
+
     execute(
         """
         INSERT INTO dbo.FireFlowTests (
@@ -514,7 +639,7 @@ def insert_fire_flow_test(
             hydrant_id,
             facility_identifier,
             hydrant_number,
-            location,
+            clean_text(location),
             test_date,
             static_psi,
             residual_psi,
@@ -525,20 +650,215 @@ def insert_fire_flow_test(
             total_gallons_flowing,
             available_fire_flow_gpm,
             flow_gpm,
-            tested_by,
-            witnessed_by,
-            source_file,
-            notes,
+            clean_text(tested_by),
+            clean_text(witnessed_by),
+            clean_text(source_file),
+            clean_text(notes),
         ),
     )
 
 
-def import_hydrant_flushing(uploaded_file):
+# -----------------------------
+# Importers
+# -----------------------------
+
+def import_standard_workbook(uploaded_file):
+    xls = pd.ExcelFile(uploaded_file)
+    sheet_names = xls.sheet_names
+
+    hydrant_sheet = "Hydrants_Combined" if "Hydrants_Combined" in sheet_names else None
+    tests_sheet = "FireFlowTests_Import" if "FireFlowTests_Import" in sheet_names else None
+
+    if hydrant_sheet is None or tests_sheet is None:
+        raise ValueError(
+            "This is not the standard Fire Flow workbook. Expected sheets named "
+            "Hydrants_Combined and FireFlowTests_Import."
+        )
+
+    hydrants_df = normalize_columns(pd.read_excel(uploaded_file, sheet_name=hydrant_sheet))
+    tests_df = normalize_columns(pd.read_excel(uploaded_file, sheet_name=tests_sheet))
+
+    hydrants_read = 0
+    hydrants_inserted = 0
+    hydrants_updated = 0
+    hydrants_skipped = 0
+
+    for _, row in hydrants_df.iterrows():
+        hydrants_read += 1
+
+        raw_hydrant = get_value(row, hydrants_df, ["HydrantNumber", "Hydrant Number", "ExistingTagNumber", "Existing Tag Number"])
+        hydrant_number = standardize_hydrant_number(raw_hydrant)
+        facility_identifier = clean_text(get_value(row, hydrants_df, ["FacilityIdentifier", "Facility Identifier"]))
+        existing_tag = clean_text(get_value(row, hydrants_df, ["ExistingTagNumber", "Existing Tag Number"]))
+        location = clean_text(get_value(row, hydrants_df, ["LocationDescription", "Location Description", "Location"]))
+
+        if is_header_or_bad_row(hydrant_number, facility_identifier, location):
+            hydrants_skipped += 1
+            continue
+
+        if not hydrant_number and not facility_identifier:
+            hydrants_skipped += 1
+            continue
+
+        if not hydrant_number:
+            hydrant_number = standardize_hydrant_number(facility_identifier)
+
+        if not facility_identifier:
+            facility_identifier = facility_identifier_from_hydrant(hydrant_number)
+
+        hydrant_size = to_decimal(get_value(row, hydrants_df, ["HydrantSize", "Hydrant Size"]))
+        manufacturer = clean_text(get_value(row, hydrants_df, ["Manufacturer"]))
+        model_year = clean_text(get_value(row, hydrants_df, ["ModelYear", "Model Year"]))
+        install_date = to_date(get_value(row, hydrants_df, ["InstallDate", "Install_Date", "Install Date"]))
+        operable = to_bool(get_value(row, hydrants_df, ["Operable"]))
+        active = to_bool(get_value(row, hydrants_df, ["Active"]))
+        notes = clean_text(get_value(row, hydrants_df, ["Notes", "General Notes"]))
+        latitude = to_decimal(get_value(row, hydrants_df, ["Latitude", "Y", "Y2", "y2"]))
+        longitude = to_decimal(get_value(row, hydrants_df, ["Longitude", "X", "X2", "x2"]))
+
+        _, created = find_or_create_hydrant(
+            facility_identifier=facility_identifier,
+            hydrant_number=hydrant_number,
+            existing_tag=existing_tag,
+            location=location,
+            hydrant_size=hydrant_size,
+            manufacturer=manufacturer,
+            model_year=model_year,
+            install_date=install_date,
+            operable=operable,
+            active=active if active is not None else 1,
+            latitude=latitude,
+            longitude=longitude,
+            notes=notes,
+        )
+
+        if created:
+            hydrants_inserted += 1
+        else:
+            hydrants_updated += 1
+
+    tests_read = 0
+    tests_inserted = 0
+    tests_skipped = 0
+
+    for _, row in tests_df.iterrows():
+        tests_read += 1
+
+        raw_hydrant = get_value(row, tests_df, ["HydrantNumber", "Hydrant Number", "Location"])
+        hydrant_number = standardize_hydrant_number(raw_hydrant)
+        facility_identifier = clean_text(get_value(row, tests_df, ["FacilityIdentifier", "Facility Identifier"]))
+        location = clean_text(get_value(row, tests_df, ["LocationDescription", "Location Description", "Location"]))
+
+        if is_header_or_bad_row(hydrant_number, facility_identifier, location):
+            tests_skipped += 1
+            continue
+
+        if not hydrant_number and facility_identifier:
+            hydrant_number = standardize_hydrant_number(facility_identifier)
+
+        if not hydrant_number:
+            tests_skipped += 1
+            continue
+
+        test_date = to_date(get_value(row, tests_df, ["TestDate", "Test Date", "Date"]))
+        static_psi = to_decimal(get_value(row, tests_df, ["StaticPsi", "Static PSI", "Static"]))
+        residual_psi = to_decimal(get_value(row, tests_df, ["ResidualPsi", "Residual PSI", "Residual"]))
+        pitot_psi = to_decimal(get_value(row, tests_df, ["PitotPsi", "Pitot PSI", "Pitot"]))
+        outlet_diameter = to_decimal(get_value(row, tests_df, ["OutletDiameterInches", "Outlet Diameter Inches", "Diameter of outlet", "Outlet Diameter", "Diameter"]))
+        number_of_outlets = to_int(get_value(row, tests_df, ["NumberOfOutlets", "Number of Outlets", "Number of outlets flowing", "Outlets"]))
+        coefficient = to_decimal(get_value(row, tests_df, ["Coefficient", "Coefficient C = .9", "C"]))
+
+        total_gallons_flowing = to_decimal(get_value(row, tests_df, ["TotalGallonsFlowing", "Total Gallons Flowing", "Q"]))
+        flow_gpm = to_decimal(get_value(row, tests_df, ["FlowGpm", "Flow GPM", "Flow", "Flow (PSI)"]))
+        available_fire_flow_gpm = to_decimal(get_value(row, tests_df, ["AvailableFireFlowGpm", "Available Fire Flow GPM", "Available Fire Flow", "AFF"]))
+
+        if flow_gpm is None and total_gallons_flowing is not None:
+            flow_gpm = total_gallons_flowing
+        if total_gallons_flowing is None and flow_gpm is not None:
+            total_gallons_flowing = flow_gpm
+        if flow_gpm is None:
+            flow_gpm = calculate_flow_gpm(pitot_psi, outlet_diameter, coefficient, number_of_outlets)
+            total_gallons_flowing = flow_gpm
+        if available_fire_flow_gpm is None:
+            available_fire_flow_gpm = calculate_available_fire_flow(flow_gpm, static_psi, residual_psi)
+
+        tested_by = clean_text(get_value(row, tests_df, ["TestedBy", "Tested By"]))
+        witnessed_by = clean_text(get_value(row, tests_df, ["WitnessedBy", "Witnessed By", "Witnessed"]))
+        notes = clean_text(get_value(row, tests_df, ["Notes"]))
+
+        if (
+            test_date is None
+            and flow_gpm is None
+            and available_fire_flow_gpm is None
+            and static_psi is None
+            and residual_psi is None
+            and pitot_psi is None
+        ):
+            tests_skipped += 1
+            continue
+
+        hydrant_id, _ = find_or_create_hydrant(
+            facility_identifier=facility_identifier,
+            hydrant_number=hydrant_number,
+            location=location,
+        )
+
+        if fire_flow_duplicate_exists(hydrant_number, test_date, static_psi, residual_psi, pitot_psi, flow_gpm):
+            tests_skipped += 1
+            continue
+
+        insert_fire_flow_test(
+            hydrant_id=hydrant_id,
+            facility_identifier=facility_identifier,
+            hydrant_number=hydrant_number,
+            location=location,
+            test_date=test_date,
+            static_psi=static_psi,
+            residual_psi=residual_psi,
+            pitot_psi=pitot_psi,
+            outlet_diameter=outlet_diameter,
+            number_of_outlets=number_of_outlets,
+            coefficient=coefficient,
+            total_gallons_flowing=total_gallons_flowing,
+            available_fire_flow_gpm=available_fire_flow_gpm,
+            flow_gpm=flow_gpm,
+            tested_by=tested_by,
+            witnessed_by=witnessed_by,
+            source_file=uploaded_file.name,
+            notes=notes,
+        )
+
+        tests_inserted += 1
+
+    insert_import_batch(
+        uploaded_file.name,
+        "StandardWorkbook",
+        hydrants_read + tests_read,
+        hydrants_inserted + tests_inserted,
+        hydrants_updated,
+        hydrants_skipped + tests_skipped,
+        notes=(
+            f"Hydrants read {hydrants_read}, inserted {hydrants_inserted}, updated {hydrants_updated}, "
+            f"skipped {hydrants_skipped}. Tests read {tests_read}, inserted {tests_inserted}, skipped {tests_skipped}."
+        ),
+    )
+
+    return {
+        "hydrants_read": hydrants_read,
+        "hydrants_inserted": hydrants_inserted,
+        "hydrants_updated": hydrants_updated,
+        "hydrants_skipped": hydrants_skipped,
+        "tests_read": tests_read,
+        "tests_inserted": tests_inserted,
+        "tests_skipped": tests_skipped,
+    }
+
+
+def import_legacy_hydrant_flushing(uploaded_file):
     xls = pd.ExcelFile(uploaded_file)
     sheet_name = "Hydrants_0" if "Hydrants_0" in xls.sheet_names else xls.sheet_names[0]
 
-    df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
-    df = normalize_columns(df)
+    df = normalize_columns(pd.read_excel(uploaded_file, sheet_name=sheet_name))
 
     required_any = [
         "Facility Identifier",
@@ -549,18 +869,13 @@ def import_hydrant_flushing(uploaded_file):
     ]
 
     found_required = [col for col in required_any if col in df.columns]
-
     if len(found_required) < 2:
         raise ValueError(
             "This does not look like the Hydrant / Flushing spreadsheet. "
             "Expected columns like Facility Identifier, Location Description, Existing Tag Number, Flow (PSI), or Date Hydrant Flushed."
         )
 
-    rows_read = 0
-    rows_inserted = 0
-    rows_updated = 0
-    rows_skipped = 0
-    tests_inserted = 0
+    rows_read = rows_inserted = rows_updated = rows_skipped = tests_inserted = 0
 
     for _, row in df.iterrows():
         rows_read += 1
@@ -568,19 +883,13 @@ def import_hydrant_flushing(uploaded_file):
         facility_identifier = clean_text(get_value(row, df, ["Facility Identifier", "FacilityIdentifier"]))
         location = clean_text(get_value(row, df, ["Location Description", "LocationDescription"]))
         existing_tag = clean_text(get_value(row, df, ["Existing Tag Number", "ExistingTagNumber"]))
-
-        hydrant_number = existing_tag or facility_identifier
+        hydrant_number = standardize_hydrant_number(existing_tag or facility_identifier)
 
         if is_header_or_bad_row(facility_identifier, hydrant_number, location):
             rows_skipped += 1
             continue
 
         if not hydrant_number and not facility_identifier:
-            rows_skipped += 1
-            continue
-
-        # Extra protection: skip accidental Fire Flow export rows.
-        if hydrant_number in ["HydrantNumber", "FacilityIdentifier", "Id"]:
             rows_skipped += 1
             continue
 
@@ -638,7 +947,7 @@ def import_hydrant_flushing(uploaded_file):
 
     insert_import_batch(
         uploaded_file.name,
-        "HydrantFlushing",
+        "LegacyHydrantFlushing",
         rows_read,
         rows_inserted,
         rows_updated,
@@ -649,26 +958,17 @@ def import_hydrant_flushing(uploaded_file):
     return rows_read, rows_inserted, rows_updated, rows_skipped, tests_inserted
 
 
-def import_fire_flow_tests(uploaded_file):
+def import_legacy_fire_flow_tests(uploaded_file):
     xls = pd.ExcelFile(uploaded_file)
     sheet_name = "Flowtests" if "Flowtests" in xls.sheet_names else xls.sheet_names[0]
 
-    # Read without assuming the header row. Then find the real header row.
-    raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
-    raw = raw.dropna(how="all")
-
+    raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None).dropna(how="all")
     header_row_index = None
 
     for idx, row in raw.iterrows():
         row_values = [clean_text(v) for v in row.tolist()]
         row_text = " ".join([v.lower() for v in row_values if v])
-
-        if (
-            "location" in row_text
-            and "pitot" in row_text
-            and "static" in row_text
-            and "residual" in row_text
-        ):
+        if "location" in row_text and "pitot" in row_text and "static" in row_text and "residual" in row_text:
             header_row_index = idx
             break
 
@@ -680,23 +980,17 @@ def import_fire_flow_tests(uploaded_file):
     headers = raw.loc[header_row_index].tolist()
     df = raw.loc[header_row_index + 1:].copy()
     df.columns = [clean_text(c) or f"Column{i}" for i, c in enumerate(headers)]
-    df = normalize_columns(df)
-    df = df.dropna(how="all")
+    df = normalize_columns(df).dropna(how="all")
 
-    rows_read = 0
-    rows_inserted = 0
-    rows_skipped = 0
+    rows_read = rows_inserted = rows_skipped = 0
 
     for _, row in df.iterrows():
         rows_read += 1
 
-        hydrant_number = clean_text(get_value(row, df, ["Location", "Hydrant", "Hydrant Number", "HydrantNumber"]))
-
+        hydrant_number = standardize_hydrant_number(get_value(row, df, ["Location", "Hydrant", "Hydrant Number", "HydrantNumber"]))
         test_date = to_date(get_value(row, df, ["Test Date", "Date"]))
-
         total_gallons_flowing = to_decimal(get_value(row, df, ["Q", "Total Gallons Flowing", "Gallons Flowing"]))
         flow_gpm = total_gallons_flowing
-
         coefficient = to_decimal(get_value(row, df, ["Coefficient", "Coefficient C = .9", "C = .9"]))
         outlet_diameter = to_decimal(get_value(row, df, ["Diameter of outlet", "Outlet Diameter", "Diameter"]))
         number_of_outlets = to_int(get_value(row, df, ["Number of outlets flowing", "Number of Outlets", "Outlets"]))
@@ -706,16 +1000,7 @@ def import_fire_flow_tests(uploaded_file):
         residual_psi = to_decimal(get_value(row, df, ["Residual", "Residual PSI"]))
         witnessed_by = clean_text(get_value(row, df, ["Witnessed By", "Witnessed"]))
 
-        # Skip repeated header rows or accidental exports.
-        if is_header_or_bad_row(
-            hydrant_number,
-            test_date,
-            flow_gpm,
-            available_fire_flow_gpm,
-            static_psi,
-            residual_psi,
-            pitot_psi,
-        ):
+        if is_header_or_bad_row(hydrant_number, test_date, flow_gpm, available_fire_flow_gpm, static_psi, residual_psi, pitot_psi):
             rows_skipped += 1
             continue
 
@@ -723,27 +1008,20 @@ def import_fire_flow_tests(uploaded_file):
             rows_skipped += 1
             continue
 
-        # Skip rows that do not contain any useful fire-flow numbers.
-        if (
-            flow_gpm is None
-            and available_fire_flow_gpm is None
-            and static_psi is None
-            and residual_psi is None
-            and pitot_psi is None
-        ):
+        if flow_gpm is None:
+            flow_gpm = calculate_flow_gpm(pitot_psi, outlet_diameter, coefficient, number_of_outlets)
+            total_gallons_flowing = flow_gpm
+
+        if available_fire_flow_gpm is None:
+            available_fire_flow_gpm = calculate_available_fire_flow(flow_gpm, static_psi, residual_psi)
+
+        if flow_gpm is None and available_fire_flow_gpm is None and static_psi is None and residual_psi is None and pitot_psi is None:
             rows_skipped += 1
             continue
 
         hydrant_id, _ = find_or_create_hydrant(hydrant_number=hydrant_number)
 
-        if fire_flow_duplicate_exists(
-            hydrant_number,
-            test_date,
-            static_psi,
-            residual_psi,
-            pitot_psi,
-            flow_gpm,
-        ):
+        if fire_flow_duplicate_exists(hydrant_number, test_date, static_psi, residual_psi, pitot_psi, flow_gpm):
             rows_skipped += 1
             continue
 
@@ -768,15 +1046,20 @@ def import_fire_flow_tests(uploaded_file):
 
     insert_import_batch(
         uploaded_file.name,
-        "FireFlow",
+        "LegacyFireFlow",
         rows_read,
         rows_inserted,
         0,
         rows_skipped,
-        notes="Imported fire-flow test spreadsheet.",
+        notes="Imported legacy fire-flow test spreadsheet.",
     )
 
     return rows_read, rows_inserted, rows_skipped
+
+
+# -----------------------------
+# Load / export data
+# -----------------------------
 
 @st.cache_data(ttl=30)
 def load_hydrants():
@@ -865,6 +1148,72 @@ def export_excel(hydrants, tests):
     return output.getvalue()
 
 
+def build_blank_template():
+    output = BytesIO()
+
+    columns = [
+        "HydrantNumber",
+        "TestDate",
+        "StaticPsi",
+        "ResidualPsi",
+        "PitotPsi",
+        "OutletDiameterInches",
+        "NumberOfOutlets",
+        "Coefficient",
+        "FlowGpm",
+        "AvailableFireFlowGpm",
+        "WitnessedBy",
+        "TestedBy",
+        "Notes",
+    ]
+
+    template = pd.DataFrame(
+        [
+            {
+                "HydrantNumber": "1",
+                "TestDate": date.today(),
+                "StaticPsi": 80,
+                "ResidualPsi": 60,
+                "PitotPsi": 20,
+                "OutletDiameterInches": 2.5,
+                "NumberOfOutlets": 1,
+                "Coefficient": 0.9,
+                "FlowGpm": "",
+                "AvailableFireFlowGpm": "",
+                "WitnessedBy": "",
+                "TestedBy": "",
+                "Notes": "",
+            }
+        ],
+        columns=columns,
+    )
+
+    instructions = pd.DataFrame(
+        [
+            {"Field": "HydrantNumber", "Instructions": "Use the hydrant number without HYD-. HYD-1 and 1 are treated as the same hydrant."},
+            {"Field": "TestDate", "Instructions": "Date of the fire-flow test."},
+            {"Field": "StaticPsi", "Instructions": "Static pressure before flowing."},
+            {"Field": "ResidualPsi", "Instructions": "Residual pressure while flowing."},
+            {"Field": "PitotPsi", "Instructions": "Pitot reading."},
+            {"Field": "OutletDiameterInches", "Instructions": "Outlet diameter in inches, usually 2.5."},
+            {"Field": "NumberOfOutlets", "Instructions": "Number of outlets flowing."},
+            {"Field": "Coefficient", "Instructions": "Usually 0.9."},
+            {"Field": "FlowGpm", "Instructions": "Optional. Leave blank and the app will calculate if pitot, diameter, coefficient, and outlets are provided."},
+            {"Field": "AvailableFireFlowGpm", "Instructions": "Optional. Leave blank and the app will calculate if flow, static, and residual are provided."},
+        ]
+    )
+
+    with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="mm/dd/yyyy", date_format="mm/dd/yyyy") as writer:
+        template.to_excel(writer, sheet_name="FireFlowTests_Import", index=False)
+        instructions.to_excel(writer, sheet_name="Instructions", index=False)
+
+    return output.getvalue()
+
+
+# -----------------------------
+# Pages
+# -----------------------------
+
 def dashboard_page():
     st.title("🚒 Fire Flow Dashboard")
 
@@ -949,64 +1298,184 @@ def dashboard_page():
 def import_page():
     st.title("Import Fire Flow Data")
 
-    st.subheader("Import Hydrant / Flushing Spreadsheet")
-    st.write("Use this for the GIS/flushing workbook. `Flow (PSI)` will be imported as `FlowGpm`.")
+    st.subheader("Download Blank Fire Flow Test Template")
 
-    flushing_file = st.file_uploader(
-        "Hydrant / Flushing Excel file",
-        type=["xlsx"],
-        key="flushing_file",
+    st.download_button(
+        label="Download Blank Fire Flow Test Template",
+        data=build_blank_template(),
+        file_name="Blank_Fire_Flow_Test_Template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-    if flushing_file is not None:
-        if st.button("Import Hydrant / Flushing File"):
-            try:
-                with st.spinner("Importing hydrant/flushing data..."):
-                    result = import_hydrant_flushing(flushing_file)
-                    st.cache_data.clear()
-
-                rows_read, rows_inserted, rows_updated, rows_skipped, tests_inserted = result
-
-                st.success(
-                    f"Import complete. Rows read: {rows_read}, hydrants inserted: {rows_inserted}, "
-                    f"hydrants updated: {rows_updated}, skipped: {rows_skipped}, "
-                    f"test rows inserted: {tests_inserted}."
-                )
-            except Exception as exc:
-                st.error(str(exc))
 
     st.divider()
 
-    st.subheader("Import Fire Flow Test Spreadsheet")
-    st.write("Use this for the 2021 fire-flow workbook with static, residual, pitot, and available fire flow.")
+    st.subheader("Import Standard Fire Flow Workbook")
+    st.write("Use this for the combined workbook with `Hydrants_Combined` and `FireFlowTests_Import` sheets.")
 
-    fire_flow_file = st.file_uploader(
-        "Fire Flow Excel file",
+    standard_file = st.file_uploader(
+        "Standard Fire Flow workbook",
         type=["xlsx"],
-        key="fire_flow_file",
+        key="standard_file",
     )
 
-    if fire_flow_file is not None:
-        if st.button("Import Fire Flow Test File"):
+    if standard_file is not None:
+        if st.button("Import Standard Fire Flow Workbook"):
             try:
-                with st.spinner("Importing fire-flow tests..."):
-                    result = import_fire_flow_tests(fire_flow_file)
+                with st.spinner("Importing standard fire-flow workbook..."):
+                    result = import_standard_workbook(standard_file)
                     st.cache_data.clear()
 
-                rows_read, rows_inserted, rows_skipped = result
-
                 st.success(
-                    f"Import complete. Rows read: {rows_read}, tests inserted: {rows_inserted}, "
-                    f"skipped: {rows_skipped}."
+                    "Import complete. "
+                    f"Hydrants read: {result['hydrants_read']}, inserted: {result['hydrants_inserted']}, "
+                    f"updated: {result['hydrants_updated']}, skipped: {result['hydrants_skipped']}. "
+                    f"Tests read: {result['tests_read']}, inserted: {result['tests_inserted']}, "
+                    f"skipped: {result['tests_skipped']}."
                 )
             except Exception as exc:
                 st.error(str(exc))
+
+    with st.expander("Legacy import tools"):
+        st.subheader("Import Hydrant / Flushing Spreadsheet")
+        st.write("Use this only for the original GIS/flushing workbook. `Flow (PSI)` will be imported as `FlowGpm`.")
+
+        flushing_file = st.file_uploader(
+            "Hydrant / Flushing Excel file",
+            type=["xlsx"],
+            key="flushing_file",
+        )
+
+        if flushing_file is not None:
+            if st.button("Import Hydrant / Flushing File"):
+                try:
+                    with st.spinner("Importing hydrant/flushing data..."):
+                        result = import_legacy_hydrant_flushing(flushing_file)
+                        st.cache_data.clear()
+
+                    rows_read, rows_inserted, rows_updated, rows_skipped, tests_inserted = result
+                    st.success(
+                        f"Import complete. Rows read: {rows_read}, hydrants inserted: {rows_inserted}, "
+                        f"hydrants updated: {rows_updated}, skipped: {rows_skipped}, "
+                        f"test rows inserted: {tests_inserted}."
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
+
+        st.subheader("Import Legacy Fire Flow Test Spreadsheet")
+        st.write("Use this only for the original 2021 fire-flow workbook.")
+
+        fire_flow_file = st.file_uploader(
+            "Fire Flow Excel file",
+            type=["xlsx"],
+            key="fire_flow_file",
+        )
+
+        if fire_flow_file is not None:
+            if st.button("Import Legacy Fire Flow Test File"):
+                try:
+                    with st.spinner("Importing fire-flow tests..."):
+                        result = import_legacy_fire_flow_tests(fire_flow_file)
+                        st.cache_data.clear()
+
+                    rows_read, rows_inserted, rows_skipped = result
+                    st.success(
+                        f"Import complete. Rows read: {rows_read}, tests inserted: {rows_inserted}, "
+                        f"skipped: {rows_skipped}."
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
 
     st.divider()
 
     st.subheader("Import History")
     batches = load_import_batches()
-    st.dataframe(batches, use_container_width=True)
+    st.dataframe(batches, use_container_width=True, hide_index=True)
+
+
+def new_test_page():
+    st.title("New Fire Flow Test")
+
+    hydrants = load_hydrants()
+
+    if hydrants.empty:
+        st.warning("No hydrants are loaded yet. Import the standard workbook first or create a hydrant from the Hydrants page.")
+        return
+
+    hydrants = hydrants.copy()
+    hydrants["Display"] = hydrants.apply(
+        lambda r: f"{r.get('HydrantNumber', '')} - {r.get('LocationDescription', '')}",
+        axis=1,
+    )
+
+    selected_id = st.selectbox(
+        "Hydrant",
+        options=hydrants["Id"].tolist(),
+        format_func=lambda x: hydrants.loc[hydrants["Id"] == x, "Display"].iloc[0],
+    )
+
+    selected = hydrants.loc[hydrants["Id"] == selected_id].iloc[0]
+
+    with st.form("new_fire_flow_test_form"):
+        col1, col2, col3 = st.columns(3)
+
+        test_date = col1.date_input("Test date", value=date.today())
+        static_psi = col1.number_input("Static PSI", min_value=0.0, value=0.0, step=0.1)
+        residual_psi = col1.number_input("Residual PSI", min_value=0.0, value=0.0, step=0.1)
+
+        pitot_psi = col2.number_input("Pitot PSI", min_value=0.0, value=0.0, step=0.1)
+        outlet_diameter = col2.number_input("Outlet diameter inches", min_value=0.0, value=2.5, step=0.1)
+        number_of_outlets = col2.number_input("Number of outlets", min_value=1, value=1, step=1)
+
+        coefficient = col3.number_input("Coefficient", min_value=0.0, value=0.9, step=0.01, format="%.3f")
+        witnessed_by = col3.text_input("Witnessed by")
+        tested_by = col3.text_input("Tested by")
+
+        notes = st.text_area("Notes")
+
+        preview_flow = calculate_flow_gpm(pitot_psi, outlet_diameter, coefficient, number_of_outlets)
+        preview_aff = calculate_available_fire_flow(preview_flow, static_psi, residual_psi)
+
+        st.write(f"Calculated Flow GPM: **{preview_flow:,.2f}**" if preview_flow is not None else "Calculated Flow GPM: **not available**")
+        st.write(f"Calculated Available Fire Flow GPM: **{preview_aff:,.2f}**" if preview_aff is not None else "Calculated Available Fire Flow GPM: **not available**")
+
+        submitted = st.form_submit_button("Save Fire Flow Test")
+
+    if submitted:
+        hydrant_number = standardize_hydrant_number(selected.get("HydrantNumber"))
+        facility_identifier = clean_text(selected.get("FacilityIdentifier"))
+        location = clean_text(selected.get("LocationDescription"))
+
+        if preview_flow is None and preview_aff is None and static_psi == 0 and residual_psi == 0 and pitot_psi == 0:
+            st.error("Enter fire-flow test readings before saving.")
+            return
+
+        if fire_flow_duplicate_exists(hydrant_number, test_date, static_psi, residual_psi, pitot_psi, preview_flow):
+            st.warning("That test already appears to exist for this hydrant.")
+            return
+
+        insert_fire_flow_test(
+            hydrant_id=selected_id,
+            facility_identifier=facility_identifier,
+            hydrant_number=hydrant_number,
+            location=location,
+            test_date=test_date,
+            static_psi=static_psi if static_psi != 0 else None,
+            residual_psi=residual_psi if residual_psi != 0 else None,
+            pitot_psi=pitot_psi if pitot_psi != 0 else None,
+            outlet_diameter=outlet_diameter if outlet_diameter != 0 else None,
+            number_of_outlets=number_of_outlets,
+            coefficient=coefficient if coefficient != 0 else None,
+            total_gallons_flowing=preview_flow,
+            available_fire_flow_gpm=preview_aff,
+            flow_gpm=preview_flow,
+            tested_by=tested_by,
+            witnessed_by=witnessed_by,
+            source_file="Manual Entry",
+            notes=notes,
+        )
+
+        st.cache_data.clear()
+        st.success("Fire-flow test saved.")
 
 
 def hydrants_page():
@@ -1103,6 +1572,7 @@ def tests_page():
         st.info("No fire-flow tests imported yet.")
         return
 
+    tests = tests.copy()
     tests["TestDate"] = pd.to_datetime(tests["TestDate"], errors="coerce")
 
     col1, col2, col3 = st.columns(3)
@@ -1167,10 +1637,26 @@ def setup_page():
         UNION ALL
         SELECT 'FireFlowImportBatches' AS TableName, COUNT(*) AS TotalRows FROM dbo.FireFlowImportBatches
         """
-     )
+    )
 
     st.dataframe(counts, use_container_width=True, hide_index=True)
 
+    st.divider()
+    st.subheader("Danger Zone")
+
+    confirm = st.text_input("Type CLEAR FIRE FLOW to delete all Fire Flow dashboard data")
+    if st.button("Delete all Fire Flow dashboard data"):
+        if confirm == "CLEAR FIRE FLOW":
+            execute("DELETE FROM dbo.FireFlowTests; DELETE FROM dbo.FireFlowImportBatches; DELETE FROM dbo.FireFlowHydrants;")
+            st.cache_data.clear()
+            st.success("Fire Flow dashboard tables were cleared.")
+        else:
+            st.error("Confirmation text did not match.")
+
+
+# -----------------------------
+# App start
+# -----------------------------
 
 try:
     ensure_tables()
@@ -1186,6 +1672,7 @@ page = st.sidebar.radio(
     [
         "Dashboard",
         "Import",
+        "New Fire Flow Test",
         "Hydrants",
         "Fire Flow Tests",
         "Export",
@@ -1197,6 +1684,8 @@ if page == "Dashboard":
     dashboard_page()
 elif page == "Import":
     import_page()
+elif page == "New Fire Flow Test":
+    new_test_page()
 elif page == "Hydrants":
     hydrants_page()
 elif page == "Fire Flow Tests":
