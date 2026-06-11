@@ -26,7 +26,7 @@ SQL_USER = os.getenv("SQL_USER", "sa")
 SQL_PASSWORD = os.getenv("SQL_PASSWORD", "")
 
 
-def get_conn():
+def get_conn(as_dict=False):
     return pymssql.connect(
         server=SQL_SERVER,
         port=SQL_PORT,
@@ -35,7 +35,7 @@ def get_conn():
         database=SQL_DATABASE,
         login_timeout=10,
         timeout=30,
-        as_dict=True,
+        as_dict=as_dict,
     )
 
 
@@ -52,7 +52,7 @@ def query_df(sql, params=None):
 
 
 def query_one(sql, params=None):
-    with get_conn() as conn:
+    with get_conn(as_dict=True) as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params or ())
             return cur.fetchone()
