@@ -1254,44 +1254,93 @@ def dashboard_page():
     top_aff = tests_chart.dropna(subset=["AvailableFireFlowGpm"]).copy()
     if not top_aff.empty:
         top_aff["AvailableFireFlowGpm"] = pd.to_numeric(top_aff["AvailableFireFlowGpm"], errors="coerce")
+        top_aff = top_aff.dropna(subset=["AvailableFireFlowGpm"])
         top_aff = top_aff.sort_values("AvailableFireFlowGpm", ascending=False).head(20)
 
-        fig = px.bar(
-            top_aff.sort_values("AvailableFireFlowGpm"),
-            x="AvailableFireFlowGpm",
-            y="HydrantNumber",
-            orientation="h",
+        top_aff["HydrantLabel"] = top_aff["HydrantNumber"].astype(str)
+
+        fig = px.scatter(
+            top_aff,
+            x="HydrantNumber",
+            y="AvailableFireFlowGpm",
+            text="HydrantLabel",
+            size="AvailableFireFlowGpm",
+            hover_data=[
+                "HydrantNumber",
+                "TestDate",
+                "AvailableFireFlowGpm",
+                "FlowGpm",
+                "StaticPsi",
+                "ResidualPsi",
+                "PitotPsi",
+            ],
             title="Top 20 Available Fire Flow Values",
-            labels={"AvailableFireFlowGpm": "Available Fire Flow (GPM)", "HydrantNumber": "Hydrant"},
+            labels={
+                "HydrantNumber": "Hydrant",
+                "AvailableFireFlowGpm": "Available Fire Flow (GPM)",
+            },
         )
+
+        fig.update_traces(
+            textposition="top center",
+            marker=dict(size=12),
+        )
+
+        fig.update_layout(
+            xaxis_title="Hydrant",
+            yaxis_title="Available Fire Flow (GPM)",
+            height=550,
+        )
+
         st.plotly_chart(fig, use_container_width=True)
 
     low_flow = tests_chart.copy()
-    low_flow["BestFlow"] = pd.to_numeric(low_flow["AvailableFireFlowGpm"], errors="coerce")
-    low_flow["BestFlow"] = low_flow["BestFlow"].fillna(pd.to_numeric(low_flow["FlowGpm"], errors="coerce"))
-    low_flow = low_flow.dropna(subset=["BestFlow"]).sort_values("BestFlow").head(20)
+    low_flow["AvailableFireFlowGpm"] = pd.to_numeric(low_flow["AvailableFireFlowGpm"], errors="coerce")
+    low_flow["FlowGpm"] = pd.to_numeric(low_flow["FlowGpm"], errors="coerce")
+
+    low_flow["BestFlow"] = low_flow["AvailableFireFlowGpm"]
+    low_flow["BestFlow"] = low_flow["BestFlow"].fillna(low_flow["FlowGpm"])
+
+    low_flow = low_flow.dropna(subset=["BestFlow"])
+    low_flow = low_flow.sort_values("BestFlow", ascending=True).head(20)
 
     if not low_flow.empty:
-        fig = px.bar(
-            low_flow.sort_values("BestFlow", ascending=False),
-            x="BestFlow",
-            y="HydrantNumber",
-            orientation="h",
-            title="Lowest 20 Flow / Available Fire Flow Values",
-            labels={"BestFlow": "Flow / AFF (GPM)", "HydrantNumber": "Hydrant"},
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        low_flow["HydrantLabel"] = low_flow["HydrantNumber"].astype(str)
 
-    pressure_df = tests_chart.dropna(subset=["StaticPsi", "ResidualPsi"])
-    if not pressure_df.empty:
         fig = px.scatter(
-            pressure_df,
-            x="StaticPsi",
-            y="ResidualPsi",
-            hover_data=["HydrantNumber", "TestDate", "FlowGpm", "AvailableFireFlowGpm"],
-            title="Static PSI vs Residual PSI",
-            labels={"StaticPsi": "Static PSI", "ResidualPsi": "Residual PSI"},
+            low_flow,
+            x="HydrantNumber",
+            y="BestFlow",
+            text="HydrantLabel",
+            size="BestFlow",
+            hover_data=[
+                "HydrantNumber",
+                "TestDate",
+                "BestFlow",
+                "AvailableFireFlowGpm",
+                "FlowGpm",
+                "StaticPsi",
+                "ResidualPsi",
+                "PitotPsi",
+            ],
+            title="Lowest 20 Flow / Available Fire Flow Values",
+            labels={
+                "HydrantNumber": "Hydrant",
+                "BestFlow": "Flow / Available Fire Flow (GPM)",
+            },
         )
+
+        fig.update_traces(
+            textposition="top center",
+            marker=dict(size=12),
+        )
+
+        fig.update_layout(
+            xaxis_title="Hydrant",
+            yaxis_title="Flow / Available Fire Flow (GPM)",
+            height=550,
+        )
+
         st.plotly_chart(fig, use_container_width=True)
 
 
