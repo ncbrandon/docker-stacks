@@ -1,0 +1,36 @@
+name: weewx
+
+services:
+  weewx:
+    build:
+      context: .
+    container_name: weewx
+    restart: unless-stopped
+    environment:
+      TZ: America/New_York
+    volumes:
+      - ./data:/data
+    networks:
+      - weather-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  weewx-web:
+    image: nginx:alpine
+    container_name: weewx-web
+    restart: unless-stopped
+    depends_on:
+      - weewx
+    volumes:
+      - ./data/public_html:/usr/share/nginx/html:ro
+    networks:
+      - weather-internal
+      - tunnel
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  weather-internal:
+    name: weather-internal
+  tunnel:
+    external: true
