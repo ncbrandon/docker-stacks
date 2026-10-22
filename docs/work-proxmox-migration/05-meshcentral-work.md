@@ -71,3 +71,6 @@ Settings were written in the data volume with a prior copy named `config.json.be
 - [ ] Restore complete instance on isolated test Docker VM.
 - [ ] Preserve original agent identity through simulated Proxmox migration.
 - [ ] Review and approve access to any SCADA/OT devices separately.
+
+## First work agent field test — 2026-10-22
+Operator reported the first MeshCentral agent connection worked through the work deployment. This supports basic connectivity and remote-control testing; **not yet verified**: post-reboot reconnection, per-user permissions, MFA, origin certificate trust, or a Proxmox restore drill.
