@@ -24,4 +24,4 @@ NOTE: Script expects the last scheduled daily MeshCentral folder and daily manho
 ## First verified production off-host transfer — 2026-10-22
 User executed `/home/brandon/offsite-work-backups.sh` on work VM. Output confirmed `SHA256SUMS` successful for four MeshCentral tarballs, encrypted remote upload of `manhole-backup-2026-10-22_03-15-01.zip` and MeshCentral directory `20261022-124305`, followed by `rclone check --download`: **Manhole Survey 1 matching file, zero differences; MeshCentral 6 matching files, zero differences**. Script reported SUCCESS.
 
-The 04:00 cron entry **has not yet been confirmed installed**. Remote retention and independent Proxmox restore test still pending. Verify encryption backend configuration/credentials stored securely outside server.
+The user verified via `crontab -l` on 2026-10-22 that the 04:00 cron entry **is installed**, along with the 03:00 SQL, 03:15 Manhole, and 03:30 MeshCentral jobs. The first unattended run has not yet been observed. Remote retention and independent Proxmox restore test still pending. Verify encryption backend configuration/credentials stored securely outside server.
