@@ -79,5 +79,5 @@ SECURITY: This archive contains account database and server private keys.
 EOF
 mv "$tmp" "$DEST/$stamp"
 echo "SUCCESS: $DEST/$stamp"
-find "$DEST" -mindepth 1 -maxdepth 1 -type d -name '20????????-??????' -mtime +"$RETENTION_DAYS" -print0 | xargs -0 -r rm -rf --
+find "$DEST" -mindepth 1 -maxdepth 1 -type d -name '20??????-??????' -mtime +"$RETENTION_DAYS" -print0 | xargs -0 -r rm -rf --
 echo "Local retention applied; REMOTE/OFF-HOST BACKUP IS NOT CONFIGURED."
