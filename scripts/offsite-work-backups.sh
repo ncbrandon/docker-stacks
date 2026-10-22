@@ -42,7 +42,7 @@ echo "Uploading MeshCentral complete backup directory: $latest_mesh"
 rclone copy "/input/mesh/$latest_mesh" "$DEST/meshcentral/$latest_mesh" --retries 3
 # Verify byte-for-byte readback of decrypted encrypted remote.
 echo "Verifying Manhole ZIP by downloaded-byte comparison"
-rclone check "/input/manhole/$latest_manhole" "$DEST/manhole-survey/$latest_manhole" --download --one-way
+rclone check /input/manhole "$DEST/manhole-survey" --include "$latest_manhole" --download --one-way
 echo "Verifying MeshCentral archives by downloaded-byte comparison"
 rclone check "/input/mesh/$latest_mesh" "$DEST/meshcentral/$latest_mesh" --download --one-way
 echo "SUCCESS: Both today's backups are stored and verified through nas-crypt:"
