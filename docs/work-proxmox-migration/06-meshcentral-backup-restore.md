@@ -36,4 +36,4 @@ Repeat for `meshcentral-files`, `meshcentral-backups`, `meshcentral-web`. **Neve
 6. Start container and test login, MFA, user-to-device authorization and existing installed agents through the hostname **before declaring recovery successful**.
 
 ## Current status
-Script saved in GitHub but not executed on server. No remote backup or restore-test has been demonstrated.
+**Observed 2026-10-22:** Script installed and run manually on work VM. It archived all four named volumes, all four SHA256 checks passed, and printed `SUCCESS: /home/brandon/meshcentral-backups/20261022-124305`. User crontab verified to contain `30 3 * * * /home/brandon/backup-meshcentral-work.sh >> /home/brandon/meshcentral-backups/backup.log 2>&1`. **Still unverified:** service restarted and agents reconnected after script, next cron execution, encrypted off-host transfer, and independent restore drill.
