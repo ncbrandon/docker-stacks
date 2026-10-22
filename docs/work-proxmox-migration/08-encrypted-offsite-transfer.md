@@ -20,3 +20,8 @@ The script mounts the existing host rclone config read-only into the `rclone/rcl
 IMPORTANT: Remote 30-day cleanup is **not enabled**, pending recovery validation and safe deletion scope review. Preserve a recovery-tested historical snapshot. Verify source ZIP includes all manhole database/uploads and application source separately. Confirm MeshCentral starts and agents reconnect after local backup. Back up encryption credentials securely outside the same host and NAS.
 
 NOTE: Script expects the last scheduled daily MeshCentral folder and daily manhole ZIP. Run on same day after both completed. On manual test Oct 22 MeshCentral has folder `20261022-124305` and manhole has `manhole-backup-2026-10-22_03-15-01.zip`. `--download` verification can consume network bandwidth.
+
+## First verified production off-host transfer — 2026-10-22
+User executed `/home/brandon/offsite-work-backups.sh` on work VM. Output confirmed `SHA256SUMS` successful for four MeshCentral tarballs, encrypted remote upload of `manhole-backup-2026-10-22_03-15-01.zip` and MeshCentral directory `20261022-124305`, followed by `rclone check --download`: **Manhole Survey 1 matching file, zero differences; MeshCentral 6 matching files, zero differences**. Script reported SUCCESS.
+
+The 04:00 cron entry **has not yet been confirmed installed**. Remote retention and independent Proxmox restore test still pending. Verify encryption backend configuration/credentials stored securely outside server.
