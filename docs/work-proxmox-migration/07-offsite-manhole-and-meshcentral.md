@@ -39,3 +39,10 @@ find /home/brandon -maxdepth 5 -type f \( -iname '*manhole*.zip' -o -iname '*man
 grep -nE 'backup|zip|retention|destination|output|days' /home/brandon/backup_manhole.py | head -60
 ```
 Review results before writing any NAS-transfer cron jobs. The `grep` may display destination paths but should not be used if the script contains hard-coded secrets.
+
+## Source evidence — October 22, 2026
+- Host shell returns `rclone: command not found`. This does **not** imply the backup container lacks rclone: prior inventory recorded `/home/brandon/.config/rclone:/config/rclone` inside `sql-backup`.
+- Five manhole ZIP files were found in `/home/brandon/manhole-backups`; latest `manhole-backup-2026-10-22_03-15-01.zip`. All displayed sizes were 109,414 bytes; contents and database integrity not yet verified.
+- `/home/brandon/backup_manhole.py` exists, size 3,288 bytes, but its actual contents/backup consistency have not yet been reviewed.
+- MeshCentral backup folders `20261022-123935` and `20261022-124305` exist; second was verified by the backup script; first folder should be reviewed as possibly incomplete, not blindly deleted.
+- **Do not install host rclone or automate NAS retention until existing container remote configuration and crypt status are checked.**
