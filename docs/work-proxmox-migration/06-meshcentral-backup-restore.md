@@ -8,7 +8,7 @@ This is a **reproducible backup procedure**, not proof a live backup was made. S
 2. **Run one attended test**: `/home/brandon/backup-meshcentral-work.sh`. This briefly stops `meshcentral-work`, archives all **four actual named Docker volumes**, then restarts it if previously running.
 3. Check output; verify directory and hashes: `ls -ld /home/brandon/meshcentral-backups/*/` then `cd /home/brandon/meshcentral-backups/DATE-FOLDER && sha256sum -c SHA256SUMS`.
 4. Check `docker ps --filter name=meshcentral-work`, log in at `https://remote.wjwater.org`, and test an existing agent after the script returns.
-5. **Only after success**, add `0 2 * * * /home/brandon/backup-meshcentral-work.sh >> /home/brandon/meshcentral-backups/backup.log 2>&1` to the work user's crontab via `crontab -e`. This is before the existing 03:00 SQL backup and 03:15 manhole backup.
+5. **Only after success**, add `30 3 * * * /home/brandon/backup-meshcentral-work.sh >> /home/brandon/meshcentral-backups/backup.log 2>&1` to the work user's crontab via `crontab -e`. This is after the existing 03:00 SQL backup and 03:15 manhole backup.
 6. Back up the entire `/home/brandon/meshcentral-backups` directory to an **encrypted off-host destination** (existing `nas:` rclone remote is a possible target, but first verify destination, encryption and credentials). Local archives alone **will not protect against host/disk failure**. Keep at least one restore-tested off-host copy.
 
 ### Cautions
